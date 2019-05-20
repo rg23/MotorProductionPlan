@@ -1,0 +1,94 @@
+Declare
+	--@Mat varchar(200) = 'MHCXTES401X1', 
+	@qty float = 1,
+	@Plant varchar(100) = '1380',
+	@BOM_Usage varchar(10) = 1,
+	@Alternate_BOM varchar(10) = '01'
+
+
+
+Drop table if exists #Stas
+Select distinct STLNR,STLKN
+into #STAs
+from SAP.STAS
+where LKENZ = 'X'
+
+Drop table if exists #MAt
+Select Distinct MaterialNumber,MaterialGroup,MaterialType
+into #MAT
+from DimMaterial a
+
+Drop table if exists #BOM_Explode
+Select distinct a.MaterialNumber,b.MATNR,b.STLNR ,c.IDNRK,C.MENGE * @qty MENGE,C.MEINS,C.LGORT,d.BMENG,d.BMEIN,0 val
+into #BOM_Explode
+from #MAT a
+JOIN SAP.MAST b on a.MaterialNumber = b.MATNR
+JOIN SAp.STAS s on b.STLNR = s.STLNR
+JOIn SAP.STPO C ON s.STLNR = c.STLNR and s.STLKN = c.STLKN
+LEFT JOIN #STAS e on s.STLNR = e.STLNR and s.STLKN = e.STLKN
+LEFT JOIN SAP.STKO d on d.STLNR = c.STLNR
+where e.STLKN is null and b.WERKS = @Plant
+and b.STLAL = @Alternate_BOM and STLAN = @BOM_Usage
+and s.STLAL = @Alternate_BOM 
+order by 1
+
+DECLARE @i int = 1,@j int 
+Set @i = 1
+Set @j=1
+
+Drop table if exists #IDNRK
+Select Distinct IDNRK 
+into #IDNRK
+from #BOM_Explode
+
+Set @i = (Select count(*) from #IDNRK)
+
+WHILE @i > 0
+BEGIN
+	
+		Drop table if exists #BMP
+	Select distinct @Mat MaterialNumber,b.MATNR,b.STLNR,c.IDNRK,C.MENGE * @qty MENGE,C.MEINS,C.LGORT,d.BMENG,d.BMEIN,@j val
+	into #BMP
+	from #IDNRK a
+	JOIN SAP.MAST b on a.IDNRK = b.MATNR
+	JOIN SAP.STAS s on b.STLNR = s.STLNR
+	JOIn SAP.STPO C ON s.STLNR = c.STLNR and s.STLKN = c.STLKN
+	LEFT JOIN #STAS e on s.STLNR = e.STLNR and s.STLKN = e.STLKN
+	LEFT JOIN SAP.STKO d on d.STLNR = c.STLNR
+	where e.STLKN is null and b.WERKS = @Plant
+	and b.STLAL = @Alternate_BOM and STLAN = @BOM_Usage
+	and s.STLAL = @Alternate_BOM 
+	order by 1
+	
+	Truncate table #IDNRK
+	Insert into #IDNRK (IDNRK)
+	Select Distinct IDNRK 
+	from #BMP
+
+	Set @i = (Select count(*) from #IDNRK)	
+
+	insert into #BOM_Explode(MaterialNumber,MATNR,STLNR,IDNRK,MENGE,MEINS,LGORT,BMENG,BMEIN,val)
+	Select * 
+	from #BMP
+
+	Set @j = @j + 1
+
+END
+
+Drop table if exists #BOM_Explode_2
+Select *,case when meins = 'KM' then 'MM' 
+		      when meins = 'M' then 'MM'
+			  when meins = 'L' then 'ML'
+			  when meins = 'KG' then 'G'
+			  else meins end MEINS_2,
+case when meins = 'KM' then MENGE*1000000 
+	 when meins in ('M','L','KG') then MENGE*1000
+	 else MENGE end MENGE_2
+into #BOM_Explode_2
+from #BOM_Explode
+order by val
+
+
+Select * 
+into ##BOM
+from #BOM_Explode_2

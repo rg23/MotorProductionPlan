@@ -1,0 +1,273 @@
+import pyodbc
+import pandas as  pd
+import sys
+import numpy
+
+conn_217 = pyodbc.connect(
+    r'DRIVER={ODBC Driver 13 for SQL Server};'
+    r'SERVER=10.199.4.217;'
+    r'DATABASE=HavellsDWH;'
+    r'UID=******;'
+    r'PWD=******'
+    )
+cursor_217 = conn_217.cursor()
+
+#cursor_217 = 0
+# This is the production connection string
+
+'''conn_dev = pyodbc.connect(
+    r'DRIVER={ODBC Driver 13 for SQL Server};'
+    r'SERVER=10.200.4.195;'
+    r'DATABASE=HavellsDWH;'
+    r'UID=spo0171_03_RW;'
+    r'PWD=NewWorld@123'
+)
+
+cursorDev = conn_dev.cursor()
+# This is the development connection string
+'''
+
+query_prir = '''Select Plant, MaterialNumber,NetReq,priority from Report.ProductionPriority where NetReq > 0'''
+
+currStock = '''
+            
+ Select Plant,MaterialNumber,sum(stk_2) stk
+ from (            
+            Select *,case when UOM = 'KM' then 'MM' 
+                          when UOM = 'M' then 'MM'
+                          when UOM = 'L' then 'ML'
+                          when UOM = 'KG' then 'G'
+                          else UOM
+                          end UOM_2,
+            case when UOM = 'KM' then stk*1000000 
+                 when UOM in ('M','L','KG') then stk*1000
+                 else stk end stk_2           
+            from (            Select Plant,MaterialNumber,BaseUnitOfMeasure UOM,SUM(UnRestrictedStock) stk
+								from FactInventoryMB52
+								where  Plant = 1380 and StorageLocation in ('A001','C001','C002','C003','C004','C005','C006','C007')
+								group by plant,MaterialNumber,BaseUnitOfMeasure
+				 )a 
+      ) a      
+      group by Plant,MaterialNumber
+	  order by 1,2
+            '''
+
+cursor = conn_217.cursor()
+
+cursor.execute(query_prir)
+cursor.execute(currStock)
+
+output = list()
+cursor.execute(query_prir)
+
+for row in cursor.fetchall():
+   one =1
+
+df = pd.read_sql(query_prir, conn_217)
+currStk = pd.read_sql(currStock,conn_217)
+
+#print(0)
+#print(df)
+prior = df.as_matrix()  # this is the total priority that neends to be handled.
+stock = currStk.as_matrix() # this is the total Stock for the day
+stock_Copy = stock # this is the temp stock used for manual working.
+
+def getStock(mat):  #Return stock for a material in the asked material Types
+    if (mat == None):
+        return 0
+    for i in range(len(stock_Copy)):
+        if(stock_Copy[i][1] == mat):
+            return stock_Copy[i][2]
+    return 0
+
+def updateMainStock():
+    stock = stock_Copy
+
+def updateStock_MatWise(mat,qty):  # Changes made in the copy of stock.
+    if(mat==None):
+        return
+    for i in range(len(stock)):
+        if(stock_Copy[i][1] == mat):
+            stock_Copy[i][2] = stock_Copy[i][2] - qty
+    return
+
+def return_Bom(material,qty):  # returns the BOM used for the material
+    bom = 'EXEC [dbo].[USP_ZBOM_Explode] @Mat = ? , @Qty = ?, @Plant = ? , @BOM_Usage = ? , @Alternate_BOM = ?'
+    values = (material, qty,1380,1,'01')  #('MHCITES60X75',1)
+    cursor.execute(bom, values)
+    cursor.commit()
+
+    bom_mat = pd.read_sql(bom, conn_217, None, True, values)
+    bom_FG_1 = bom_mat.loc[bom_mat['val'] == 0]
+    bom_FG = bom_FG_1.as_matrix()
+    return bom_FG
+
+def getEarlierStock():
+    stock_Copy = stock
+    return
+
+def maxIterations(bom):  # this is used for calculations of the max level of the system file
+    max = 0
+    for i in range(bom):
+        if (max > bom[i][9]):
+            max = bom[i][9]
+    return max
+
+################################# STOCK UPDATION CODE START ########################################
+def isPossible_usingChild_StockUpdate(mat,reqQ):  #using child allocation if possible
+
+    child_Bom = return_Bom(mat,reqQ)
+
+    if(len(child_Bom) == False):   # If the number of records are maintained then these documents are resolved.
+        return 0
+
+#    minPossible = 0
+
+    arr = list()
+
+    for i in range(len(child_Bom)):
+
+        mat_Sih = getStock(child_Bom[i][3])
+
+        if (child_Bom[i][4] > mat_Sih):
+            updateStock_MatWise(child_Bom[i][3],mat_Sih)
+            mat_Sih = mat_Sih + isPossible_usingChild_StockUpdate(child_Bom[i][3],child_Bom[i][4] - mat_Sih)
+        else:
+            updateStock_MatWise(child_Bom[i][3],child_Bom[i][4])
+
+        minR = min(mat_Sih, child_Bom[i][4])
+        min_Q =int((reqQ/child_Bom[i][4]) * minR)
+        if (minR < mat_Sih):
+            min_Q = reqQ
+        arr.append(min_Q)
+
+#    pmin(arr)
+#    print("Child Level",mat,min_Q,min(arr))
+
+    return min(arr)
+
+def updateStock(mat,reqQ):
+    bom = return_Bom(mat, reqQ)
+    if (len(bom) == 0):
+        # getEarlierStock()
+        return 0
+    j = 0
+
+    arr = list()
+
+    for i in range(len(bom)):
+ #       print("The Material ", bom[i][3], " needs ", bom[i][4], " and the plant has ", getStock(bom[i][3]))
+
+        mat_Sih = getStock(bom[i][3])
+#        print("1", mat_Sih)
+
+        if (bom[i][4] > mat_Sih):
+            updateStock_MatWise(bom[i][3],mat_Sih)
+            mat_Sih = mat_Sih + isPossible_usingChild_StockUpdate(bom[i][3], bom[i][4] - mat_Sih)
+        else:
+            updateStock_MatWise(bom[i][3],bom[i][4])
+
+#        print("2", mat_Sih)
+
+        minR = min(mat_Sih, bom[i][4])
+
+#        print("3", minR)
+
+    #    print("reqQ", reqQ, "bom[i][4]", bom[i][4], "minR", minR)
+
+        min_Q = int ((reqQ / bom[i][4]) * minR)
+
+        if (minR < mat_Sih):
+            min_Q = reqQ
+
+    #    print("4", min_Q)
+
+        arr.append(min_Q)
+    #    print("min uptill now", min(arr))
+  #  print("The Stock for material",mat," is updated by quantity",min(arr))
+    return
+
+################################# STOCK UPDATION CODE FINISH ####################################################
+
+################################ MAT ALLOCATION CODE START (Main Code) ##########################################
+
+
+def isPossible_usingChild(mat,reqQ):  #using child allocation if possible
+    child_Bom = return_Bom(mat,reqQ)
+
+    if(len(child_Bom) == False):   # If the number of records are maintained then these documents are resolved.
+        return 0
+    arr = list()
+    for i in range(len(child_Bom)):
+        mat_Sih = getStock(child_Bom[i][3])
+        if (child_Bom[i][4] > mat_Sih):
+            mat_Sih = mat_Sih + isPossible_usingChild(child_Bom[i][3],child_Bom[i][4] - mat_Sih)
+        minR = min(mat_Sih, child_Bom[i][4])
+        #print(mat,child_Bom[i][3], child_Bom[i][4])
+        if(child_Bom[i][4]==0):
+            min_Q = 0
+        else:
+            min_Q =int((reqQ/child_Bom[i][4]) * minR)
+        if (minR < mat_Sih):
+            min_Q = reqQ
+        arr.append(min_Q)
+
+ #   print("Child Level",mat,min_Q,min(arr))
+
+    return min(arr)
+
+def isPossible(mat,reqQ):
+    bom = return_Bom(mat,reqQ)
+    if(len(bom)==0):
+        return 0
+    j=0
+    arr = list()
+    for i in range(len(bom)):
+           # print("The Material ", bom[i][3], " needs ", bom[i][4], " and the plant has ",getStock(bom[i][3]))
+            mat_Sih = getStock(bom[i][3])
+            #print("1",mat_Sih)
+            if (bom[i][4] > mat_Sih):
+                mat_Sih = mat_Sih + isPossible_usingChild(bom[i][3],bom[i][4] - mat_Sih)
+            #print("2",mat_Sih)
+            minR = min(mat_Sih,bom[i][4])
+            #print("3",minR)
+            #print("reqQ",reqQ,"bom[i][4]",bom[i][4],"minR",minR)
+
+#           print(type(reqQ),type(minR))
+
+            min_Q = int((reqQ/bom[i][4]) * minR)
+            if(minR<mat_Sih):
+                min_Q = reqQ
+            #print("4",min_Q)
+            arr.append(min_Q)
+            #print("min uptill now",min(arr))
+
+#    print(mat,"Final",min(arr))
+
+    if(min(arr)>0):
+        updateStock(mat,min(arr))  ## This is used to update stock based on the data of the stock that can be allocated
+        updateMainStock()
+
+    return min(arr)
+
+def toSqltable(plant,mat,qtyReq,qtyAlloq):
+
+    cursor.execute("insert into SCMPP.ProductionPlan(plant,MaterialNumber,netReq,rawMatAvl) values(?,?,?,?)",plant,mat,qtyReq,qtyAlloq)
+
+def stockAlloq():
+    # start with the bom explode of first matrix
+    #cursor.execute("truncate table Havellsdwh.SCMPP.productionPlan")
+    for i in range(len(prior)): #(len(prior)):# (len(prior)):
+        print("The system is working on: ",i," ",prior[i][1]," quantity ",prior[i][2],"with current FG stock as",getStock(prior[i][1]))
+        toSqltable(1380, prior[i][1], prior[i][2], isPossible(prior[i][1],prior[i][2]))
+
+    #sys.exit()
+    print("\n \n \n The Process has completed")
+    return
+
+stockAlloq()
+
+#isPossible('MHMNTFT84445',40)
+
+#isPossible('MHNAZBS46716',269)
+
