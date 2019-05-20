@@ -5,8 +5,8 @@ import numpy
 
 conn_217 = pyodbc.connect(
     r'DRIVER={ODBC Driver 13 for SQL Server};'
-    r'SERVER=10.199.4.217;'
-    r'DATABASE=HavellsDWH;'
+    r'SERVER=*******;'
+    r'DATABASE=******;'
     r'UID=******;'
     r'PWD=******'
     )
@@ -17,10 +17,10 @@ cursor_217 = conn_217.cursor()
 
 '''conn_dev = pyodbc.connect(
     r'DRIVER={ODBC Driver 13 for SQL Server};'
-    r'SERVER=10.200.4.195;'
-    r'DATABASE=HavellsDWH;'
-    r'UID=spo0171_03_RW;'
-    r'PWD=NewWorld@123'
+   r'SERVER=*******;'
+    r'DATABASE=******;'
+    r'UID=******;'
+    r'PWD=******'
 )
 
 cursorDev = conn_dev.cursor()
